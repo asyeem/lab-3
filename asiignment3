@@ -1,0 +1,66 @@
+#!/bin/bash
+
+# Target machines' management addresses
+targets=("target1-mgmt" "target2-mgmt")
+target_ips=("172.16.1.10" "172.16.1.11")
+
+# NMS's IP addresses for the updated /etc/hosts
+nms_ip="192.168.1.2"
+
+# SSH username for the target machines
+ssh_user="remoteadmin"
+
+# Path to your private SSH key
+private_key_path="/path/to/your/private/key"
+
+# Function to execute commands on a remote machine
+run_remote_command() {
+    ssh -i "$private_key_path" "$ssh_user@$1" "$2"
+}
+
+# Loop through target machines
+for ((i=0; i<${#targets[@]}; i++)); do
+    target="${targets[i]}"
+    target_ip="${target_ips[i]}"
+    
+    echo "Configuring $target ($target_ip)"
+
+    # Change system name
+    run_remote_command "$target" "sudo hostnamectl set-hostname loghost"
+
+    # Change IP address to host number 3 on the lan
+    run_remote_command "$target" "sudo ip addr add 192.168.16.3/24 dev eth0"
+    
+    # Add entries to /etc/hosts
+    run_remote_command "$target" "echo '192.168.16.4 webhost' | sudo tee -a /etc/hosts"
+
+    # Install ufw if necessary and allow connections to port 514/udp from mgmt network
+    run_remote_command "$target" "sudo apt-get update && sudo apt-get install -y ufw"
+    run_remote_command "$target" "sudo ufw allow from 172.16.1.0/24 to any port 514 proto udp"
+
+    # Configure rsyslog
+    run_remote_command "$target" "sudo sed -i '/imudp/s/^#//' /etc/rsyslog.conf"
+    run_remote_command "$target" "sudo systemctl restart rsyslog"
+    
+    # Update NMS /etc/hosts
+    echo "$target_ip loghost" >> /etc/hosts
+done
+
+# Verify Apache web page retrieval
+if wget -qO- http://webhost &> /dev/null; then
+    echo "Apache web page retrieved successfully from webhost."
+else
+    echo "Failed to retrieve Apache web page from webhost."
+fi
+
+# Verify syslog entries
+if ssh -i "$private_key_path" "$ssh_user@loghost" "grep -q webhost /var/log/syslog"; then
+    echo "Syslog entries from webhost found on loghost."
+else
+    echo "No syslog entries from webhost found on loghost."
+fi
+
+# Update NMS /etc/hosts for webhost
+echo "$nms_ip webhost" >> /etc/hosts
+
+echo "Configuration update completed."
